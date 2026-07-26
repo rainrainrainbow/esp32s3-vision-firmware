@@ -1,0 +1,6 @@
+.backup/
+.operit/
+*.pyc
+__pycache__/
+*.bin
+build/
