@@ -1,0 +1,42 @@
+"on":
+  workflow_dispatch:
+
+name: Min Test
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Minimal test
+        run: |
+          echo "=== Hello ==="
+          echo "User: $(whoami)"
+          echo "PWD: $(pwd)"
+          echo "Date: $(date)"
+          
+          echo ""
+          echo "=== Disk ==="
+          df -h / /tmp
+          
+          echo ""
+          echo "=== Network test ==="
+          curl -sS -o /dev/null -w "github.com: %{http_code}\n" "https://github.com" --connect-timeout 10
+          curl -sS -o /dev/null -w "raw.githubusercontent: %{http_code}\n" "https://raw.githubusercontent.com" --connect-timeout 10
+          curl -sS -o /dev/null -w "releases espressif: %{http_code}\n" "https://github.com/espressif/esp-idf/releases" --connect-timeout 10
+          
+          echo ""
+          echo "=== Download small file ==="
+          cd /tmp
+          curl -v --connect-timeout 15 "https://raw.githubusercontent.com/espressif/esp-vision/master/idf_ext.py" -o test_file.py 2>&1 | tail -10
+          ls -la test_file.py 2>/dev/null
+          
+          echo ""
+          echo "=== Git clone small repo ==="
+          cd /tmp
+          rm -rf micropython
+          git clone --depth 1 --branch v1.28.0 https://github.com/micropython/micropython.git 2>&1 | tail -5
+          ls micropython/ 2>/dev/null | head -10
+          
+          echo ""
+          echo "=== All tests done ==="
