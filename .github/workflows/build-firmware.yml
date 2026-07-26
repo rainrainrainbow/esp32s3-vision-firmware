@@ -2,291 +2,247 @@
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['trigger-build.txt']
 
-name: Build ESP32-S3 Vision Firmware
+name: Build Firmware
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 50
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Install packages + verify
+      - name: Setup toolchain and IDF
         run: |
           set -x
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          echo "=== Step 1: Install Ubuntu packages ==="
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
             git wget curl ca-certificates \
             build-essential ccache \
-            python3 python3-pip python3-venv \
+            python3 python3-pip \
             cmake ninja-build \
             libffi-dev libssl-dev \
-            dfu-util libusb-1.0-0 \
-            zip unzip xz-utils 2>&1 | tail -3
-          echo "--- Tools ---"
-          which make gcc python3 wget curl git cmake
-          make --version | head -1
-          gcc --version | head -1
-          python3 --version
+            zip unzip xz-utils \
+            > /dev/null 2>&1
+          echo "✅ Packages done"
+          which gcc make python3 wget curl
 
-      - name: Download ESP-IDF v5.5 source
-        run: |
-          set -x
+          echo ""
+          echo "=== Step 2: Clone ESP-IDF v5.5 ==="
+          sudo rm -rf /opt/esp-idf
           cd /opt
-          sudo rm -rf esp-idf
           sudo git clone -b v5.5 --depth 1 --shallow-submodules \
-            https://github.com/espressif/esp-idf.git 2>&1 | tail -5
-          echo "--- /opt/esp-idf ---"
-          ls /opt/esp-idf/ | head -10
-          echo "IDF_PATH=/opt/esp-idf" >> $GITHUB_ENV
+            https://github.com/espressif/esp-idf.git 2>&1 | tail -3
+          ls /opt/esp-idf/ | head -5
+          echo "✅ IDF cloned"
 
-      - name: Download Xtensa toolchain
-        run: |
-          set -x
+          echo ""
+          echo "=== Step 3: Download Xtensa toolchain ==="
           cd /tmp
-          URL="https://github.com/espressif/crosstool-NG/releases/download/esp-12.2.0_20230208/xtensa-esp32s3-elf-12.2.0_20230208-x86_64-linux-gnu.tar.gz"
-          echo "Downloading from: $URL"
-          wget -v --connect-timeout 30 --tries 3 --timeout 300 \
-            "$URL" -O tc.tar.gz 2>&1 | tail -10
-          
-          if [ -f tc.tar.gz ] && [ -s tc.tar.gz ]; then
-            SIZE=$(wc -c < tc.tar.gz)
-            echo "Downloaded: $SIZE bytes"
-            sudo mkdir -p /opt/xtensa
-            sudo tar xzf tc.tar.gz -C /opt/xtensa --strip-components=1
-            echo "--- /opt/xtensa/bin ---"
-            ls /opt/xtensa/bin/ | head -10
+          TOOLCHAIN="xtensa-esp32s3-elf-12.2.0_20230208-x86_64-linux-gnu.tar.gz"
+          URL="https://github.com/espressif/crosstool-NG/releases/download/esp-12.2.0_20230208/$TOOLCHAIN"
+          echo "Downloading: $URL"
+          sudo mkdir -p /opt/xtensa
+          wget -q --connect-timeout 30 --tries 3 --timeout 300 \
+            "$URL" -O "toolchain.tar.gz" 2>&1
+          echo "Wget RC: $?"
+          ls -la toolchain.tar.gz 2>/dev/null
+          if [ -s toolchain.tar.gz ]; then
+            sudo tar xzf toolchain.tar.gz -C /opt/xtensa
+            ls /opt/xtensa/bin/ 2>/dev/null | head -5
             /opt/xtensa/bin/xtensa-esp32s3-elf-gcc --version 2>&1 | head -1
-            echo "PATH=/opt/xtensa/bin:$PATH" >> $GITHUB_ENV
+            echo "✅ Toolchain ready"
           else
-            echo "DOWNLOAD FAILED"
-            ls -la tc.tar.gz 2>/dev/null || echo "No file"
-            exit 1
+            echo "❌ Toolchain download failed"
+            echo "Trying espressif/esp-idf-tools..."
+            # Alternative: try pip install of esptool and use IDF's bundled tools
+            python3 -m pip install esptool 2>&1 | tail -2
+            echo "Will try building with IDF's built-in tools"
           fi
 
-      - name: Install IDF Python requirements
-        run: |
-          set -x
+          echo ""
+          echo "=== Step 4: Install IDF Python deps ==="
           cd /opt/esp-idf
-          python3 -m pip install --upgrade pip 2>&1 | tail -1
-          python3 -m pip install -r requirements.txt 2>&1 | tail -5
-          python3 -m pip install pyyaml pyparsing 2>&1 | tail -1
-          echo "✅ Python deps installed"
+          python3 -m pip install -r requirements.txt 2>&1 | tail -3
+          echo "✅ IDF Python deps installed"
 
-      - name: Clone MicroPython v1.28.0
+          echo ""
+          echo "=== Step 5: Setup environment ==="
+          export IDF_PATH="/opt/esp-idf"
+          export PATH="/opt/xtensa/bin:$PATH"
+          echo "IDF_PATH=$IDF_PATH" >> $GITHUB_ENV
+          echo "PATH=/opt/xtensa/bin:$PATH" >> $GITHUB_ENV
+          echo "✅ Environment saved to GITHUB_ENV"
+
+      - name: Clone MicroPython + ulab
         run: |
           set -x
           WS="${{ github.workspace }}"
           mkdir -p "$WS/lib"
+
+          echo "=== Clone MicroPython v1.28.0 ==="
           cd "$WS/lib"
           rm -rf micropython
           git clone https://github.com/micropython/micropython.git 2>&1 | tail -3
           cd micropython
           git checkout v1.28.0 2>&1 | tail -1
-          echo "MP commit: $(git rev-parse --short HEAD)"
-          echo "--- ports/esp32/ ---"
-          ls ports/esp32/ | head -10
+          echo "MP HEAD: $(git rev-parse --short HEAD)"
+          test -f "ports/esp32/main.c" && echo "✅ ESP32 port OK"
 
-      - name: Clone ulab
-        run: |
-          WS="${{ github.workspace }}"
+          echo ""
+          echo "=== Clone ulab ==="
           cd "$WS/lib"
           rm -rf ulab
           git clone --depth 1 https://github.com/v923z/micropython-ulab.git ulab 2>&1 | tail -1
-          echo "✅ ulab"
+          echo "✅ ulab ready"
 
-      - name: Download esp-vision modules
+      - name: Download esp-vision files
         run: |
           set -x
           WS="${{ github.workspace }}"
           cd "$WS"
           mkdir -p modules platform overlay/component_yml/release5.5
-          
+
           BASE="https://raw.githubusercontent.com/espressif/esp-vision/master"
-          
-          # Download with verbose error reporting
-          download_file() {
-            local src="$1"
-            local dst="$2"
-            echo -n "  $src -> $dst: "
-            HTTP_CODE=$(curl -sS -o "$dst" -w "%{http_code}" --connect-timeout 15 --max-time 30 "$BASE/$src" 2>&1)
-            if [ "$HTTP_CODE" = "200" ] && [ -s "$dst" ]; then
-              echo "OK ($(wc -c < "$dst")B)"
-              return 0
+
+          download() {
+            local url="$1"
+            local dest="$2"
+            curl -fsSL --connect-timeout 15 --max-time 30 "$url" -o "$dest" 2>/dev/null
+            if [ $? -eq 0 ] && [ -s "$dest" ]; then
+              echo "  ✓ $(basename $dest) ($(wc -c < $dest)B)"
             else
-              echo "FAILED (HTTP $HTTP_CODE)"
-              # Try alternate
-              ALT="https://raw.githubusercontent.com/espressif/esp-vision/release/v5.5/$src"
-              HTTP_CODE2=$(curl -sS -o "$dst" -w "%{http_code}" --connect-timeout 10 --max-time 20 "$ALT" 2>&1)
-              if [ "$HTTP_CODE2" = "200" ] && [ -s "$dst" ]; then
-                echo "    ALT OK ($(wc -c < "$dst")B)"
-                return 0
-              else
-                echo "    ALT FAILED (HTTP $HTTP_CODE2)"
-                # Create stub to avoid build errors
-                echo "// Stub: $src not available" > "$dst"
-                return 1
-              fi
+              echo "  ✗ $(basename $dest)"
+              touch "$dest"
             fi
           }
-          
-          echo "=== modules ==="
-          download_file "modules/py_assert.h" "modules/py_assert.h"
-          download_file "modules/py_display.c" "modules/py_display.c"
-          download_file "modules/py_espdl.cpp" "modules/py_espdl.cpp"
-          download_file "modules/py_h264.c" "modules/py_h264.c"
-          download_file "modules/py_helper.c" "modules/py_helper.c"
-          download_file "modules/py_helper.h" "modules/py_helper.h"
-          download_file "modules/py_image.c" "modules/py_image.c"
-          download_file "modules/py_image.h" "modules/py_image.h"
-          download_file "modules/py_imageio.c" "modules/py_imageio.c"
-          download_file "modules/py_imageio.h" "modules/py_imageio.h"
-          download_file "modules/py_inisetup.py" "modules/py_inisetup.py"
-          download_file "modules/py_rtsp.c" "modules/py_rtsp.c"
-          download_file "modules/py_sensor.c" "modules/py_sensor.c"
-          download_file "modules/py_tflite.cpp" "modules/py_tflite.cpp"
-          download_file "modules/qstrdefs_esp_vision.h" "modules/qstrdefs_esp_vision.h"
-          
-          echo "=== platform ==="
-          download_file "platform/camera.c" "platform/camera.c"
-          download_file "platform/camera.h" "platform/camera.h"
-          download_file "platform/debug.c" "platform/debug.c"
-          download_file "platform/debug.h" "platform/debug.h"
-          download_file "platform/display.c" "platform/display.c"
-          download_file "platform/display.h" "platform/display.h"
-          download_file "platform/h264.c" "platform/h264.c"
-          download_file "platform/h264.h" "platform/h264.h"
-          download_file "platform/jpeg.c" "platform/jpeg.c"
-          download_file "platform/jpeg.h" "platform/jpeg.h"
-          download_file "platform/main.c" "platform/main.c"
-          download_file "platform/preview.c" "platform/preview.c"
-          download_file "platform/preview.h" "platform/preview.h"
-          download_file "platform/sdcard.c" "platform/sdcard.c"
-          download_file "platform/sdcard.h" "platform/sdcard.h"
-          download_file "platform/usb_msc.c" "platform/usb_msc.c"
-          
-          echo "=== overlay ==="
-          download_file "overlay/component_yml/release5.5/idf_component.yml" "overlay/component_yml/release5.5/idf_component.yml"
-          download_file "idf_ext.py" "idf_ext.py"
-          
-          echo ""
-          echo "--- modules/ ---"
-          ls -la modules/
-          echo "--- platform/ ---"
-          ls -la platform/
 
-      - name: Save debug log from prepare step
-        run: |
-          set -x
-          export IDF_PATH="/opt/esp-idf"
-          export PATH="/opt/xtensa/bin:$PATH"
-          export ESP_IDF_VERSION=5.5
-          cd "${{ github.workspace }}"
-          
-          echo "=== Environment check ==="
-          echo "IDF_PATH=$IDF_PATH"
-          echo "PATH=$PATH" | head -c 200; echo
-          which xtensa-esp32s3-elf-gcc
-          xtensa-esp32s3-elf-gcc --version | head -1
-          
+          echo "=== modules ==="
+          download "$BASE/modules/py_assert.h" "modules/py_assert.h"
+          download "$BASE/modules/py_display.c" "modules/py_display.c"
+          download "$BASE/modules/py_espdl.cpp" "modules/py_espdl.cpp"
+          download "$BASE/modules/py_h264.c" "modules/py_h264.c"
+          download "$BASE/modules/py_helper.c" "modules/py_helper.c"
+          download "$BASE/modules/py_helper.h" "modules/py_helper.h"
+          download "$BASE/modules/py_image.c" "modules/py_image.c"
+          download "$BASE/modules/py_image.h" "modules/py_image.h"
+          download "$BASE/modules/py_imageio.c" "modules/py_imageio.c"
+          download "$BASE/modules/py_imageio.h" "modules/py_imageio.h"
+          download "$BASE/modules/py_inisetup.py" "modules/py_inisetup.py"
+          download "$BASE/modules/py_rtsp.c" "modules/py_rtsp.c"
+          download "$BASE/modules/py_sensor.c" "modules/py_sensor.c"
+          download "$BASE/modules/py_tflite.cpp" "modules/py_tflite.cpp"
+          download "$BASE/modules/qstrdefs_esp_vision.h" "modules/qstrdefs_esp_vision.h"
+
+          echo "=== platform ==="
+          download "$BASE/platform/camera.c" "platform/camera.c"
+          download "$BASE/platform/camera.h" "platform/camera.h"
+          download "$BASE/platform/debug.c" "platform/debug.c"
+          download "$BASE/platform/debug.h" "platform/debug.h"
+          download "$BASE/platform/display.c" "platform/display.c"
+          download "$BASE/platform/display.h" "platform/display.h"
+          download "$BASE/platform/h264.c" "platform/h264.c"
+          download "$BASE/platform/h264.h" "platform/h264.h"
+          download "$BASE/platform/jpeg.c" "platform/jpeg.c"
+          download "$BASE/platform/jpeg.h" "platform/jpeg.h"
+          download "$BASE/platform/main.c" "platform/main.c"
+          download "$BASE/platform/preview.c" "platform/preview.c"
+          download "$BASE/platform/preview.h" "platform/preview.h"
+          download "$BASE/platform/sdcard.c" "platform/sdcard.c"
+          download "$BASE/platform/sdcard.h" "platform/sdcard.h"
+          download "$BASE/platform/usb_msc.c" "platform/usb_msc.c"
+
+          echo "=== overlay ==="
+          download "$BASE/overlay/component_yml/release5.5/idf_component.yml" "overlay/component_yml/release5.5/idf_component.yml"
+          download "$BASE/idf_ext.py" "idf_ext.py"
+
           echo ""
-          echo "=== Board files ==="
-          ls boards/MY_ESP32S3_VISION/port/
-          
-          echo ""
-          echo "=== Running: make prepare-micropython ==="
-          make prepare-micropython 2>&1 | tee /tmp/prepare_log.txt
-          PREP_RC=${PIPESTATUS[0]}
-          echo "Prepare RC: $PREP_RC"
-          
-          echo ""
-          echo "=== /tmp/prepare_log.txt (last 40 lines) ==="
-          tail -40 /tmp/prepare_log.txt
-          
-          echo ""
-          echo "=== build/ directory ==="
-          find build/ -type f 2>/dev/null | head -30
-          
-          if [ $PREP_RC -ne 0 ]; then
-            echo "❌ prepare-micropython failed with RC=$PREP_RC"
-            echo "Saving log for inspection..."
-            mkdir -p output
-            cp /tmp/prepare_log.txt output/
-            # Commit log to repo so we can read it
-            git config --global user.name "rainrainrainbow"
-            git config --global user.email "rainrainrainbow@users.noreply.github.com"
-            git add output/prepare_log.txt 2>/dev/null || true
-            git commit -m "Build debug: prepare log [skip ci]" 2>/dev/null || true
-            git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
-            git push origin main 2>&1 | tail -2
-            exit 1
-          fi
+          echo "Summary: modules=$(ls modules/ | wc -l) platform=$(ls platform/ | wc -l)"
 
       - name: Build firmware
         run: |
           set -x
           export IDF_PATH="/opt/esp-idf"
           export PATH="/opt/xtensa/bin:$PATH"
-          export ESP_IDF_VERSION=5.5
           cd "${{ github.workspace }}"
-          
-          echo "=== Running: make build ==="
-          make -j$(nproc) build 2>&1 | tee /tmp/build_log.txt
+          export ESP_IDF_VERSION=5.5
+
+          echo "=== Verify toolchain ==="
+          which xtensa-esp32s3-elf-gcc 2>/dev/null && \
+            xtensa-esp32s3-elf-gcc --version 2>&1 | head -1 || echo "⚠️  xtensa gcc not in PATH"
+
+          echo ""
+          echo "=== make prepare-micropython ==="
+          make prepare-micropython 2>&1 | tail -50
+          PREP_RC=${PIPESTATUS[0]}
+          echo "Prepare RC: $PREP_RC"
+
+          if [ $PREP_RC -ne 0 ]; then
+            echo "❌ prepare-micropython failed"
+            echo "--- build/ tree ---"
+            find build/ -type f 2>/dev/null | head -20
+            echo "--- lib/micropython/ports/esp32/boards/ ---"
+            ls lib/micropython/ports/esp32/boards/ 2>/dev/null | head -10
+            exit 1
+          fi
+
+          echo ""
+          echo "=== make build ==="
+          make -j$(nproc) build 2>&1 | tee build.log
           BUILD_RC=${PIPESTATUS[0]}
           echo "Build RC: $BUILD_RC"
-          
+
           if [ $BUILD_RC -ne 0 ]; then
             echo "❌ Build failed"
-            echo "=== Last 60 lines ==="
-            tail -60 /tmp/build_log.txt
-            mkdir -p output
-            cp /tmp/build_log.txt output/
-            git config --global user.name "rainrainrainbow"
-            git config --global user.email "rainrainrainbow@users.noreply.github.com"
-            git add output/build_log.txt 2>/dev/null || true
-            git commit -m "Build debug: build log [skip ci]" 2>/dev/null || true
-            git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
-            git push origin main 2>&1 | tail -2
+            tail -100 build.log
+            find build/ -type f 2>/dev/null | head -30
             exit 1
           fi
 
       - name: Merge binaries
         run: |
           set -x
-          export PATH="/opt/xtensa/bin:$PATH"
           cd "${{ github.workspace }}"
-          
-          python3 -m pip install esptool 2>&1 | tail -1
-          
+
           echo "=== Find artifacts ==="
           find build/ -name "*.bin" -exec ls -la {} \;
-          
+
           BOOTLOADER=$(find build/ -name "bootloader.bin" | head -1)
           PARTITION_TABLE=$(find build/ -name "partition-table.bin" | head -1)
           APP_BIN=$(find build/ \( -name "micropython.bin" -o -name "*.bin" \) ! -name "bootloader*" ! -name "partition*" ! -name "*.manifest*" | head -1)
-          
+
           echo "BL=$BOOTLOADER"
           echo "PT=$PARTITION_TABLE"
           echo "APP=$APP_BIN"
-          
+
           if [ -z "$BOOTLOADER" ] || [ -z "$PARTITION_TABLE" ] || [ -z "$APP_BIN" ]; then
             echo "❌ Missing artifacts"
-            find build/ -type f 2>/dev/null | head -40
-            tail -40 /tmp/build_log.txt 2>/dev/null
+            find build/ -type f 2>/dev/null
+            tail -50 build.log 2>/dev/null
             exit 1
           fi
-          
+
           mkdir -p output
+          python3 -c "
+          import sys
+          sys.path.insert(0, '/opt/esp-idf/components/esptool_py/esptool')
+          try:
+              import esptool
+              print(f'esptool version: {esptool.__version__}')
+          except:
+              print('esptool not directly importable')
+          "
+          # Use esptool via pip
+          python3 -m pip install esptool 2>&1 | tail -2
           esptool.py --chip esp32s3 merge_bin \
             --flash_mode dio --flash_size 16MB --flash_freq 80m \
             -o output/esp32s3_vision_firmware.bin \
             0x0 "$BOOTLOADER" 0x8000 "$PARTITION_TABLE" 0x20000 "$APP_BIN"
-          
+
           ls -la output/esp32s3_vision_firmware.bin
           echo "FIRMWARE_READY=true" >> $GITHUB_ENV
 
@@ -298,28 +254,3 @@ jobs:
           path: ${{ github.workspace }}/output/
           retention-days: 30
           if-no-files-found: error
-
-      - name: Create Release
-        if: env.FIRMWARE_READY == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v1.0.0
-          name: "ESP32-S3 Vision Firmware v1.0.0"
-          body: |
-            ## ESP32-S3 Vision Firmware v1.0.0
-            
-            - **Chip**: ESP32-S3 (320MHz dual-core)
-            - **Flash**: 16MB DIO @ 80MHz
-            - **PSRAM**: 8MB OPI @ 80MHz
-            - **Camera**: GC2145 (DVP)
-            - **Audio**: ES8311 (I2S)
-            - **Display**: 320x240 SPI LCD
-            - **Touch**: FT5x06
-            
-            ### Flash
-            ```
-            esptool.py --chip esp32s3 -p <PORT> write_flash 0x0 esp32s3_vision_firmware.bin
-            ```
-          files: ${{ github.workspace }}/output/esp32s3_vision_firmware.bin
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
