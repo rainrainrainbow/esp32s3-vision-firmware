@@ -59,9 +59,9 @@ jobs:
         source /opt/esp/idf/export.sh
         cd /tmp/esp-vision
         
-        # First run prepare-micropython
+        # First run prepare-micropython to set up the build directory
         echo "=== Running prepare-micropython ==="
-        make prepare-micropython 2>&1 | tail -20
+        make prepare-micropython BOARD=MY_ESP32S3_VISION 2>&1 | tail -20
         
         # Fix missing files that prepare-micropython doesn't copy correctly
         BUILD_BOARDS_DIR="/tmp/esp-vision/build/micropython/idf5.5/micropython/ports/esp32/boards"
@@ -69,29 +69,24 @@ jobs:
         echo "=== Fixing missing sdkconfig files ==="
         
         # Create sdkconfig.usb in boards root (shared by all boards)
-        if [ ! -f "$BUILD_BOARDS_DIR/sdkconfig.usb" ]; then
-          echo "Creating sdkconfig.usb in $BUILD_BOARDS_DIR"
-          cp $GITHUB_WORKSPACE/sdkconfig.usb "$BUILD_BOARDS_DIR/sdkconfig.usb"
-        fi
+        echo "Creating sdkconfig.usb in $BUILD_BOARDS_DIR"
+        cp $GITHUB_WORKSPACE/sdkconfig.usb "$BUILD_BOARDS_DIR/sdkconfig.usb"
         
         # Ensure sdkconfig.board exists for our board
-        if [ ! -f "$BUILD_BOARDS_DIR/MY_ESP32S3_VISION/port/sdkconfig.board" ]; then
-          echo "Creating sdkconfig.board for MY_ESP32S3_VISION"
-          mkdir -p "$BUILD_BOARDS_DIR/MY_ESP32S3_VISION/port"
-          cp $GITHUB_WORKSPACE/boards/MY_ESP32S3_VISION/port/sdkconfig.board "$BUILD_BOARDS_DIR/MY_ESP32S3_VISION/port/sdkconfig.board"
-        fi
+        echo "Creating sdkconfig.board for MY_ESP32S3_VISION"
+        mkdir -p "$BUILD_BOARDS_DIR/MY_ESP32S3_VISION/port"
+        cp $GITHUB_WORKSPACE/boards/MY_ESP32S3_VISION/port/sdkconfig.board "$BUILD_BOARDS_DIR/MY_ESP32S3_VISION/port/sdkconfig.board"
         
         # Also copy sdkconfig.usb to board port dir if needed
-        if [ ! -f "$BUILD_BOARDS_DIR/MY_ESP32S3_VISION/port/sdkconfig.usb" ]; then
-          cp $GITHUB_WORKSPACE/sdkconfig.usb "$BUILD_BOARDS_DIR/MY_ESP32S3_VISION/port/sdkconfig.usb"
-        fi
+        cp $GITHUB_WORKSPACE/sdkconfig.usb "$BUILD_BOARDS_DIR/MY_ESP32S3_VISION/port/sdkconfig.usb"
         
         echo "=== Files in build boards dir ==="
         find "$BUILD_BOARDS_DIR" -name "sdkconfig*" -type f 2>/dev/null
         
-        # Now build
-        echo "=== Building firmware ==="
-        make BOARD=MY_ESP32S3_VISION -j$(nproc)
+        # Now build using idf.py directly (not make, which would re-run prepare-micropython)
+        echo "=== Building firmware with idf.py ==="
+        cd /tmp/esp-vision/build/MY_ESP32S3_VISION/idf5.5
+        idf.py build -j$(nproc)
         echo "Firmware build completed"
 
     - name: Merge firmware binaries
