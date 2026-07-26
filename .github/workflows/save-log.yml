@@ -1,0 +1,159 @@
+"on":
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['trigger-save.txt']
+
+name: Save Build Log
+
+jobs:
+  save-log:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run make prepare and save ALL output to file
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -x
+          
+          echo "=== Install packages ==="
+          sudo apt-get update -qq 2>&1 | tail -1
+          sudo apt-get install -y -qq --no-install-recommends \
+            git wget curl ca-certificates \
+            build-essential ccache \
+            python3 python3-pip python3-venv \
+            cmake ninja-build \
+            libffi-dev libssl-dev \
+            dfu-util libusb-1.0-0 zip unzip xz-utils 2>&1 | tail -2
+          echo "✅ packages installed"
+          
+          echo ""
+          echo "=== Clone ESP-IDF ==="
+          cd /opt
+          sudo rm -rf esp-idf
+          sudo git clone -b v5.5 --depth 1 --shallow-submodules \
+            https://github.com/espressif/esp-idf.git 2>&1 | tail -3
+          ls /opt/esp-idf/tools/idf.py 2>/dev/null && echo "✅ idf.py found"
+          
+          echo ""
+          echo "=== Download toolchain ==="
+          cd /tmp
+          wget -q --connect-timeout 30 --tries 2 --timeout 240 \
+            "https://github.com/espressif/crosstool-NG/releases/download/esp-12.2.0_20230208/xtensa-esp32s3-elf-12.2.0_20230208-x86_64-linux-gnu.tar.gz" \
+            -O tc.tar.gz 2>&1 && echo "✅ toolchain DL" || echo "❌ toolchain DL failed"
+          if [ -f tc.tar.gz ] && [ -s tc.tar.gz ]; then
+            sudo mkdir -p /opt/xtensa
+            sudo tar xzf tc.tar.gz -C /opt/xtensa --strip-components=1
+            /opt/xtensa/bin/xtensa-esp32s3-elf-gcc --version 2>&1 | head -1
+          else
+            echo "❌ Cannot continue without toolchain"
+            exit 1
+          fi
+          
+          echo ""
+          echo "=== IDF Python deps ==="
+          cd /opt/esp-idf
+          python3 -m pip install --upgrade pip 2>&1 | tail -1
+          python3 -m pip install -r requirements.txt 2>&1 | tail -3
+          python3 -m pip install pyyaml pyparsing 2>&1 | tail -1
+          
+          echo ""
+          echo "=== Clone MicroPython ==="
+          WS="${{ github.workspace }}"
+          mkdir -p "$WS/lib"
+          cd "$WS/lib"
+          rm -rf micropython
+          git clone https://github.com/micropython/micropython.git 2>&1 | tail -2
+          cd micropython
+          git checkout v1.28.0 2>&1 | tail -1
+          echo "MP: $(git rev-parse --short HEAD)"
+          
+          echo ""
+          echo "=== ENVIRONMENT ==="
+          export IDF_PATH="/opt/esp-idf"
+          export PATH="/opt/xtensa/bin:$PATH"
+          export ESP_IDF_VERSION=5.5
+          echo "IDF_PATH=$IDF_PATH"
+          echo "PATH=$PATH" | head -c 150; echo
+          which xtensa-esp32s3-elf-gcc
+          xtensa-esp32s3-elf-gcc --version | head -1
+          
+          echo ""
+          echo "=== WORKSPACE FILES ==="
+          cd "$WS"
+          echo "--- Makefile ---"
+          head -5 Makefile 2>/dev/null || echo "MISSING"
+          echo ""
+          echo "--- micropython.cmake (first 20 lines) ---"
+          head -20 micropython.cmake 2>/dev/null || echo "MISSING"
+          echo ""
+          echo "--- boards/MY_ESP32S3_VISION/port/ ---"
+          ls -la boards/MY_ESP32S3_VISION/port/ 2>/dev/null
+          echo ""
+          echo "--- boards/MY_ESP32S3_VISION/port/mpconfigboard.cmake ---"
+          head -20 boards/MY_ESP32S3_VISION/port/mpconfigboard.cmake 2>/dev/null || echo "MISSING"
+          echo ""
+          echo "--- boards/MY_ESP32S3_VISION/board.cmake ---"
+          cat boards/MY_ESP32S3_VISION/board.cmake 2>/dev/null || echo "MISSING"
+          echo ""
+          echo "--- modules/ ---"
+          ls modules/ 2>/dev/null | head -20 || echo "MISSING"
+          echo ""
+          echo "--- platform/ ---"
+          ls platform/ 2>/dev/null | head -20 || echo "MISSING"
+          
+          echo ""
+          echo "=== RUNNING: make prepare-micropython 2>&1 ==="
+          cd "$WS"
+          # Save ALL output to a variable and a file
+          OUTPUT=$(make prepare-micropython 2>&1)
+          RC=$?
+          echo "$OUTPUT" > /tmp/prepare_full.log
+          echo "--- Output (first 80 lines) ---"
+          echo "$OUTPUT" | head -80
+          echo ""
+          echo "--- Output (last 40 lines) ---"
+          echo "$OUTPUT" | tail -40
+          echo ""
+          echo "Prepare RC: $RC"
+          
+          echo ""
+          echo "=== build/ directory contents ==="
+          find build/ -type f 2>/dev/null | head -30 || echo "No build/ dir"
+          
+          echo ""
+          echo "=== lib/micropython/ports/esp32/boards/ ==="
+          ls "$WS/lib/micropython/ports/esp32/boards/" 2>/dev/null | head -20
+          
+          echo ""
+          echo "=== Save log to repo ==="
+          mkdir -p "$WS/output"
+          cp /tmp/prepare_full.log "$WS/output/prepare_log.txt"
+          echo "Log saved, $(wc -l < "$WS/output/prepare_log.txt") lines"
+          
+          # Commit using the GitHub API directly
+          cd "$WS"
+          git config --global user.name "rainrainrainbow"
+          git config --global user.email "rainrainrainbow@users.noreply.github.com"
+          
+          # Use git with token
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git"
+          
+          git add output/prepare_log.txt
+          git commit -m "Build log: prepare-micropython output [skip ci]" 2>&1 | tail -3
+          git push origin main 2>&1 | tail -3
+          echo "✅ Log committed and pushed"
+          
+          echo ""
+          echo "=== SCRIPT COMPLETE ==="
+          echo "RC=$RC"
+          if [ $RC -eq 0 ]; then
+            echo "Prepare succeeded - ready to build"
+          else
+            echo "Prepare failed - check output/prepare_log.txt in repo"
+          fi
