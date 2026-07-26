@@ -1,4 +1,4 @@
-name: Build MY_ESP32S3_VISION Firmware
+name: Build ESP32-S3 Vision Firmware
 
 on:
   push:
@@ -10,105 +10,93 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
+    container: espressif/idf:release-v5.5
+    
     steps:
-    - name: Checkout user repository
+    - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Install ESP-IDF
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y git wget flex bison gperf python3 python3-pip python3-venv cmake ninja-build ccache libffi-dev libssl-dev dfu-util libusb-1.0-0
-        
-        mkdir -p ~/esp
-        cd ~/esp
-        git clone --depth 1 --branch v5.5 --recursive https://github.com/espressif/esp-idf.git
-        cd esp-idf
-        ./install.sh esp32s3
-        
-        echo "IDF_PATH=$HOME/esp/esp-idf" >> $GITHUB_ENV
-        echo "$HOME/esp/esp-idf/tools" >> $GITHUB_PATH
-
-    - name: Clone ESP-Vision repository
+    - name: Clone ESP-Vision
       run: |
         cd /tmp
         git clone --recursive --depth 1 --branch master https://github.com/espressif/esp-vision.git
         cd esp-vision
+        echo "ESP-Vision cloned successfully"
+        ls -la
 
     - name: Copy board configuration
       run: |
         ESP_VISION_DIR=/tmp/esp-vision
         BOARD_DIR=$ESP_VISION_DIR/boards/MY_ESP32S3_VISION
         
-        # Create board directory
+        # Create board directory structure
         mkdir -p $BOARD_DIR/port
         
-        # Copy board files
+        # Copy all board files
         cp -r $GITHUB_WORKSPACE/boards/MY_ESP32S3_VISION/* $BOARD_DIR/
         
         # Verify files
-        echo "Board files copied:"
+        echo "=== Board files copied ==="
         ls -la $BOARD_DIR/
         echo ""
-        echo "Port files:"
+        echo "=== Port files ==="
         ls -la $BOARD_DIR/port/
-
-    - name: Setup ESP-IDF environment
-      run: |
-        source $HOME/esp/esp-idf/export.sh
-        echo "IDF_PATH=$HOME/esp/esp-idf" >> $GITHUB_ENV
-        idf.py --version
 
     - name: Build mpy-cross
       run: |
-        source $HOME/esp/esp-idf/export.sh
+        source /opt/esp/idf/export.sh
         cd /tmp/esp-vision/lib/micropython/mpy-cross
         make -j$(nproc)
+        echo "mpy-cross built successfully"
 
     - name: Build firmware
       run: |
-        source $HOME/esp/esp-idf/export.sh
+        source /opt/esp/idf/export.sh
         cd /tmp/esp-vision
         make BOARD=MY_ESP32S3_VISION -j$(nproc)
+        echo "Firmware build completed"
 
     - name: Merge firmware binaries
       run: |
-        source $HOME/esp/esp-idf/export.sh
+        source /opt/esp/idf/export.sh
         cd /tmp/esp-vision/build/MY_ESP32S3_VISION
         
-        # Find partition table offset
-        PARTITION_OFFSET=0x8000
+        # Check if build succeeded
+        if [ ! -f "micropython.bin" ]; then
+          echo "❌ Build failed - micropython.bin not found"
+          ls -la
+          exit 1
+        fi
         
-        # Find bootloader offset
-        BOOTLOADER_OFFSET=0x0
-        
-        # Find application offset from partition table
-        APP_OFFSET=0x10000
-        
-        echo "Merging firmware binaries..."
+        echo "=== Merging firmware binaries ==="
         esptool.py --chip esp32s3 merge_bin \
           --flash_mode dio \
           --flash_size 16MB \
           --flash_freq 80m \
-          $BOOTLOADER_OFFSET bootloader/bootloader.bin \
-          $PARTITION_OFFSET partition_table/partition-table.bin \
-          $APP_OFFSET micropython.bin \
+          0x0 bootloader/bootloader.bin \
+          0x8000 partition_table/partition-table.bin \
+          0x20000 micropython.bin \
           -o MY_ESP32S3_VISION_firmware.bin
         
-        echo "Firmware merged successfully!"
+        echo "✅ Firmware merged successfully!"
         ls -lh MY_ESP32S3_VISION_firmware.bin
+        
+        # Copy to workspace for upload
+        mkdir -p $GITHUB_WORKSPACE/output
+        cp MY_ESP32S3_VISION_firmware.bin $GITHUB_WORKSPACE/output/
 
     - name: Upload firmware artifact
       uses: actions/upload-artifact@v4
       with:
         name: MY_ESP32S3_VISION_firmware
-        path: /tmp/esp-vision/build/MY_ESP32S3_VISION/MY_ESP32S3_VISION_firmware.bin
+        path: output/MY_ESP32S3_VISION_firmware.bin
         retention-days: 30
+        if-no-files-found: error
 
     - name: Create Release (on tag)
       if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v1
       with:
-        files: /tmp/esp-vision/build/MY_ESP32S3_VISION/MY_ESP32S3_VISION_firmware.bin
+        files: output/MY_ESP32S3_VISION_firmware.bin
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
