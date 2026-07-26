@@ -8,158 +8,195 @@ name: Build Firmware
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 50
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Setup toolchain and IDF
+      - name: Install deps + get toolchain
         run: |
           set -x
-          echo "=== Step 1: Install Ubuntu packages ==="
+          
+          echo "=== Install packages ==="
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
             git wget curl ca-certificates \
-            build-essential ccache \
-            python3 python3-pip \
-            cmake ninja-build \
-            libffi-dev libssl-dev \
-            zip unzip xz-utils \
+            build-essential python3 python3-pip \
+            cmake ninja-build ccache \
+            libffi-dev libssl-dev zip unzip xz-utils \
             > /dev/null 2>&1
-          echo "✅ Packages done"
-          which gcc make python3 wget curl
-
+          echo "✅ Packages"
+          which gcc make wget curl python3
+          
           echo ""
-          echo "=== Step 2: Clone ESP-IDF v5.5 ==="
-          sudo rm -rf /opt/esp-idf
+          echo "=== Clone ESP-IDF v5.5 ==="
           cd /opt
+          sudo rm -rf esp-idf
           sudo git clone -b v5.5 --depth 1 --shallow-submodules \
             https://github.com/espressif/esp-idf.git 2>&1 | tail -3
           ls /opt/esp-idf/ | head -5
-          echo "✅ IDF cloned"
-
+          
           echo ""
-          echo "=== Step 3: Download Xtensa toolchain ==="
+          echo "=== Get Xtensa toolchain ==="
+          # The key insight: GitHub-hosted runners come with some pre-installed tools
+          # Let's check what's available
+          which xtensa-esp32s3-elf-gcc 2>/dev/null || echo "Not pre-installed"
+          
+          # Try multiple URLs for the toolchain
           cd /tmp
-          TOOLCHAIN="xtensa-esp32s3-elf-12.2.0_20230208-x86_64-linux-gnu.tar.gz"
-          URL="https://github.com/espressif/crosstool-NG/releases/download/esp-12.2.0_20230208/$TOOLCHAIN"
-          echo "Downloading: $URL"
-          sudo mkdir -p /opt/xtensa
-          wget -q --connect-timeout 30 --tries 3 --timeout 300 \
-            "$URL" -O "toolchain.tar.gz" 2>&1
-          echo "Wget RC: $?"
-          ls -la toolchain.tar.gz 2>/dev/null
-          if [ -s toolchain.tar.gz ]; then
+          TOOLCHAIN_URLS=(
+            "https://github.com/espressif/crosstool-NG/releases/download/esp-12.2.0_20230208/xtensa-esp32s3-elf-12.2.0_20230208-x86_64-linux-gnu.tar.gz"
+            "https://dl.espressif.com/github_assets/esp32s3/xtensa-esp32s3-elf-12.2.0_20230208-x86_64-linux-gnu.tar.gz"
+          )
+          
+          for URL in "${TOOLCHAIN_URLS[@]}"; do
+            echo "Trying: $URL"
+            rm -f toolchain.tar.gz
+            wget -q --connect-timeout 20 --tries 2 --timeout 300 \
+              "$URL" -O toolchain.tar.gz 2>&1
+            RC=$?
+            echo "  RC=$RC"
+            if [ -s toolchain.tar.gz ]; then
+              SIZE=$(wc -c < toolchain.tar.gz)
+              echo "  Size: $SIZE"
+              if [ "$SIZE" -gt 1000000 ]; then
+                echo "  ✅ Downloaded successfully!"
+                break
+              fi
+            fi
+          done
+          
+          if [ -s toolchain.tar.gz ] && [ $(wc -c < toolchain.tar.gz) -gt 1000000 ]; then
+            echo "✅ Toolchain downloaded"
+            ls -la toolchain.tar.gz
+            sudo mkdir -p /opt/xtensa
             sudo tar xzf toolchain.tar.gz -C /opt/xtensa
-            ls /opt/xtensa/bin/ 2>/dev/null | head -5
-            /opt/xtensa/bin/xtensa-esp32s3-elf-gcc --version 2>&1 | head -1
-            echo "✅ Toolchain ready"
+            # Find the bin directory
+            find /opt/xtensa -name "xtensa-esp32s3-elf-gcc" 2>/dev/null | head -3
+            # It might be in a subdirectory
+            if [ -d /opt/xtensa/bin ]; then
+              export PATH="/opt/xtensa/bin:$PATH"
+            else
+              # Find bin dir
+              BIN_DIR=$(find /opt/xtensa -name "bin" -type d | head -1)
+              if [ -n "$BIN_DIR" ]; then
+                export PATH="$BIN_DIR:$PATH"
+              fi
+            fi
+            which xtensa-esp32s3-elf-gcc 2>/dev/null && \
+              xtensa-esp32s3-elf-gcc --version 2>&1 | head -1 || echo "gcc not found in PATH"
           else
             echo "❌ Toolchain download failed"
-            echo "Trying espressif/esp-idf-tools..."
-            # Alternative: try pip install of esptool and use IDF's bundled tools
-            python3 -m pip install esptool 2>&1 | tail -2
-            echo "Will try building with IDF's built-in tools"
+            echo "Will attempt to use IDF's built-in tool downloader"
+            # ESP-IDF has a tool for downloading tools
+            cd /opt/esp-idf
+            sudo python3 tools/idf_tools.py install esp32s3 2>&1 | tail -10
           fi
-
+          
           echo ""
-          echo "=== Step 4: Install IDF Python deps ==="
+          echo "=== Install IDF Python deps ==="
           cd /opt/esp-idf
           python3 -m pip install -r requirements.txt 2>&1 | tail -3
-          echo "✅ IDF Python deps installed"
-
+          echo "✅ IDF deps"
+          
           echo ""
-          echo "=== Step 5: Setup environment ==="
-          export IDF_PATH="/opt/esp-idf"
-          export PATH="/opt/xtensa/bin:$PATH"
-          echo "IDF_PATH=$IDF_PATH" >> $GITHUB_ENV
+          echo "=== Environment ==="
+          echo "PATH=$PATH" | head -c 300
+          echo ""
+          echo "IDF_PATH=/opt/esp-idf"
           echo "PATH=/opt/xtensa/bin:$PATH" >> $GITHUB_ENV
-          echo "✅ Environment saved to GITHUB_ENV"
+          echo "IDF_PATH=/opt/esp-idf" >> $GITHUB_ENV
 
       - name: Clone MicroPython + ulab
         run: |
           set -x
           WS="${{ github.workspace }}"
           mkdir -p "$WS/lib"
-
+          
           echo "=== Clone MicroPython v1.28.0 ==="
           cd "$WS/lib"
           rm -rf micropython
           git clone https://github.com/micropython/micropython.git 2>&1 | tail -3
           cd micropython
           git checkout v1.28.0 2>&1 | tail -1
-          echo "MP HEAD: $(git rev-parse --short HEAD)"
+          echo "MP: $(git rev-parse --short HEAD)"
           test -f "ports/esp32/main.c" && echo "✅ ESP32 port OK"
-
+          
           echo ""
           echo "=== Clone ulab ==="
           cd "$WS/lib"
           rm -rf ulab
           git clone --depth 1 https://github.com/v923z/micropython-ulab.git ulab 2>&1 | tail -1
-          echo "✅ ulab ready"
+          echo "✅ ulab"
 
-      - name: Download esp-vision files
+      - name: Download esp-vision modules
         run: |
           set -x
           WS="${{ github.workspace }}"
           cd "$WS"
           mkdir -p modules platform overlay/component_yml/release5.5
-
+          
           BASE="https://raw.githubusercontent.com/espressif/esp-vision/master"
-
-          download() {
+          
+          # Use a function that tries multiple times
+          dl() {
             local url="$1"
             local dest="$2"
-            curl -fsSL --connect-timeout 15 --max-time 30 "$url" -o "$dest" 2>/dev/null
-            if [ $? -eq 0 ] && [ -s "$dest" ]; then
-              echo "  ✓ $(basename $dest) ($(wc -c < $dest)B)"
-            else
-              echo "  ✗ $(basename $dest)"
-              touch "$dest"
-            fi
+            for i in 1 2 3; do
+              curl -fsSL --connect-timeout 15 --max-time 30 "$url" -o "$dest" 2>/dev/null
+              if [ $? -eq 0 ] && [ -s "$dest" ]; then
+                echo "  ✓ $(basename $dest) ($(wc -c < $dest)B)"
+                return 0
+              fi
+              echo "  retry $i for $(basename $dest)"
+              sleep 2
+            done
+            echo "  ✗ $(basename $dest) - creating stub"
+            touch "$dest"
+            return 1
           }
-
+          
           echo "=== modules ==="
-          download "$BASE/modules/py_assert.h" "modules/py_assert.h"
-          download "$BASE/modules/py_display.c" "modules/py_display.c"
-          download "$BASE/modules/py_espdl.cpp" "modules/py_espdl.cpp"
-          download "$BASE/modules/py_h264.c" "modules/py_h264.c"
-          download "$BASE/modules/py_helper.c" "modules/py_helper.c"
-          download "$BASE/modules/py_helper.h" "modules/py_helper.h"
-          download "$BASE/modules/py_image.c" "modules/py_image.c"
-          download "$BASE/modules/py_image.h" "modules/py_image.h"
-          download "$BASE/modules/py_imageio.c" "modules/py_imageio.c"
-          download "$BASE/modules/py_imageio.h" "modules/py_imageio.h"
-          download "$BASE/modules/py_inisetup.py" "modules/py_inisetup.py"
-          download "$BASE/modules/py_rtsp.c" "modules/py_rtsp.c"
-          download "$BASE/modules/py_sensor.c" "modules/py_sensor.c"
-          download "$BASE/modules/py_tflite.cpp" "modules/py_tflite.cpp"
-          download "$BASE/modules/qstrdefs_esp_vision.h" "modules/qstrdefs_esp_vision.h"
-
+          dl "$BASE/modules/py_assert.h" "modules/py_assert.h"
+          dl "$BASE/modules/py_display.c" "modules/py_display.c"
+          dl "$BASE/modules/py_espdl.cpp" "modules/py_espdl.cpp"
+          dl "$BASE/modules/py_h264.c" "modules/py_h264.c"
+          dl "$BASE/modules/py_helper.c" "modules/py_helper.c"
+          dl "$BASE/modules/py_helper.h" "modules/py_helper.h"
+          dl "$BASE/modules/py_image.c" "modules/py_image.c"
+          dl "$BASE/modules/py_image.h" "modules/py_image.h"
+          dl "$BASE/modules/py_imageio.c" "modules/py_imageio.c"
+          dl "$BASE/modules/py_imageio.h" "modules/py_imageio.h"
+          dl "$BASE/modules/py_inisetup.py" "modules/py_inisetup.py"
+          dl "$BASE/modules/py_rtsp.c" "modules/py_rtsp.c"
+          dl "$BASE/modules/py_sensor.c" "modules/py_sensor.c"
+          dl "$BASE/modules/py_tflite.cpp" "modules/py_tflite.cpp"
+          dl "$BASE/modules/qstrdefs_esp_vision.h" "modules/qstrdefs_esp_vision.h"
+          
           echo "=== platform ==="
-          download "$BASE/platform/camera.c" "platform/camera.c"
-          download "$BASE/platform/camera.h" "platform/camera.h"
-          download "$BASE/platform/debug.c" "platform/debug.c"
-          download "$BASE/platform/debug.h" "platform/debug.h"
-          download "$BASE/platform/display.c" "platform/display.c"
-          download "$BASE/platform/display.h" "platform/display.h"
-          download "$BASE/platform/h264.c" "platform/h264.c"
-          download "$BASE/platform/h264.h" "platform/h264.h"
-          download "$BASE/platform/jpeg.c" "platform/jpeg.c"
-          download "$BASE/platform/jpeg.h" "platform/jpeg.h"
-          download "$BASE/platform/main.c" "platform/main.c"
-          download "$BASE/platform/preview.c" "platform/preview.c"
-          download "$BASE/platform/preview.h" "platform/preview.h"
-          download "$BASE/platform/sdcard.c" "platform/sdcard.c"
-          download "$BASE/platform/sdcard.h" "platform/sdcard.h"
-          download "$BASE/platform/usb_msc.c" "platform/usb_msc.c"
-
+          dl "$BASE/platform/camera.c" "platform/camera.c"
+          dl "$BASE/platform/camera.h" "platform/camera.h"
+          dl "$BASE/platform/debug.c" "platform/debug.c"
+          dl "$BASE/platform/debug.h" "platform/debug.h"
+          dl "$BASE/platform/display.c" "platform/display.c"
+          dl "$BASE/platform/display.h" "platform/display.h"
+          dl "$BASE/platform/h264.c" "platform/h264.c"
+          dl "$BASE/platform/h264.h" "platform/h264.h"
+          dl "$BASE/platform/jpeg.c" "platform/jpeg.c"
+          dl "$BASE/platform/jpeg.h" "platform/jpeg.h"
+          dl "$BASE/platform/main.c" "platform/main.c"
+          dl "$BASE/platform/preview.c" "platform/preview.c"
+          dl "$BASE/platform/preview.h" "platform/preview.h"
+          dl "$BASE/platform/sdcard.c" "platform/sdcard.c"
+          dl "$BASE/platform/sdcard.h" "platform/sdcard.h"
+          dl "$BASE/platform/usb_msc.c" "platform/usb_msc.c"
+          
           echo "=== overlay ==="
-          download "$BASE/overlay/component_yml/release5.5/idf_component.yml" "overlay/component_yml/release5.5/idf_component.yml"
-          download "$BASE/idf_ext.py" "idf_ext.py"
-
+          dl "$BASE/overlay/component_yml/release5.5/idf_component.yml" "overlay/component_yml/release5.5/idf_component.yml"
+          dl "$BASE/idf_ext.py" "idf_ext.py"
+          
           echo ""
           echo "Summary: modules=$(ls modules/ | wc -l) platform=$(ls platform/ | wc -l)"
 
@@ -170,17 +207,17 @@ jobs:
           export PATH="/opt/xtensa/bin:$PATH"
           cd "${{ github.workspace }}"
           export ESP_IDF_VERSION=5.5
-
+          
           echo "=== Verify toolchain ==="
           which xtensa-esp32s3-elf-gcc 2>/dev/null && \
-            xtensa-esp32s3-elf-gcc --version 2>&1 | head -1 || echo "⚠️  xtensa gcc not in PATH"
-
+            xtensa-esp32s3-elf-gcc --version 2>&1 | head -1 || echo "⚠️  xtensa gcc not found"
+          
           echo ""
           echo "=== make prepare-micropython ==="
           make prepare-micropython 2>&1 | tail -50
           PREP_RC=${PIPESTATUS[0]}
           echo "Prepare RC: $PREP_RC"
-
+          
           if [ $PREP_RC -ne 0 ]; then
             echo "❌ prepare-micropython failed"
             echo "--- build/ tree ---"
@@ -189,60 +226,52 @@ jobs:
             ls lib/micropython/ports/esp32/boards/ 2>/dev/null | head -10
             exit 1
           fi
-
+          
           echo ""
           echo "=== make build ==="
           make -j$(nproc) build 2>&1 | tee build.log
           BUILD_RC=${PIPESTATUS[0]}
           echo "Build RC: $BUILD_RC"
-
+          
           if [ $BUILD_RC -ne 0 ]; then
             echo "❌ Build failed"
+            echo "--- build.log tail ---"
             tail -100 build.log
+            echo "--- build/ tree ---"
             find build/ -type f 2>/dev/null | head -30
             exit 1
           fi
 
-      - name: Merge binaries
+      - name: Merge + upload
         run: |
           set -x
           cd "${{ github.workspace }}"
-
+          
           echo "=== Find artifacts ==="
           find build/ -name "*.bin" -exec ls -la {} \;
-
+          
           BOOTLOADER=$(find build/ -name "bootloader.bin" | head -1)
           PARTITION_TABLE=$(find build/ -name "partition-table.bin" | head -1)
           APP_BIN=$(find build/ \( -name "micropython.bin" -o -name "*.bin" \) ! -name "bootloader*" ! -name "partition*" ! -name "*.manifest*" | head -1)
-
+          
           echo "BL=$BOOTLOADER"
           echo "PT=$PARTITION_TABLE"
           echo "APP=$APP_BIN"
-
+          
           if [ -z "$BOOTLOADER" ] || [ -z "$PARTITION_TABLE" ] || [ -z "$APP_BIN" ]; then
             echo "❌ Missing artifacts"
             find build/ -type f 2>/dev/null
             tail -50 build.log 2>/dev/null
             exit 1
           fi
-
+          
           mkdir -p output
-          python3 -c "
-          import sys
-          sys.path.insert(0, '/opt/esp-idf/components/esptool_py/esptool')
-          try:
-              import esptool
-              print(f'esptool version: {esptool.__version__}')
-          except:
-              print('esptool not directly importable')
-          "
-          # Use esptool via pip
-          python3 -m pip install esptool 2>&1 | tail -2
+          python3 -m pip install esptool 2>&1 | tail -1
           esptool.py --chip esp32s3 merge_bin \
             --flash_mode dio --flash_size 16MB --flash_freq 80m \
             -o output/esp32s3_vision_firmware.bin \
             0x0 "$BOOTLOADER" 0x8000 "$PARTITION_TABLE" 0x20000 "$APP_BIN"
-
+          
           ls -la output/esp32s3_vision_firmware.bin
           echo "FIRMWARE_READY=true" >> $GITHUB_ENV
 
