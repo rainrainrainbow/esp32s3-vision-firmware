@@ -85,8 +85,10 @@ jobs:
         
         # Now build using idf.py directly (not make, which would re-run prepare-micropython)
         echo "=== Building firmware with idf.py ==="
-        cd /tmp/esp-vision/build/MY_ESP32S3_VISION/idf5.5
-        idf.py build -j$(nproc)
+        cd /tmp/esp-vision/build/micropython/idf5.5/micropython/ports/esp32
+        echo "Current directory: $(pwd)"
+        echo "Contents: $(ls -la)"
+        idf.py -DBOARD=MY_ESP32S3_VISION build -j$(nproc)
         echo "Firmware build completed"
 
     - name: Merge firmware binaries
