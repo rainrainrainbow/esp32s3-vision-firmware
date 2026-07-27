@@ -79,6 +79,16 @@ jobs:
         # Copy sdkconfig.usb to MicroPython's boards directory (needed for CMake)
         cp $GITHUB_WORKSPACE/sdkconfig.usb /tmp/micropython/ports/esp32/boards/sdkconfig.usb 2>/dev/null || true
         
+        # 🔧 PATCH: Fix TinyUSB linker circular dependency
+        # tinyusb references tud_descriptor_*_cb from main component
+        # Force whole-archive on main to ensure all symbols visible to linker
+        MAIN_CMAKELISTS=/tmp/micropython/ports/esp32/main/CMakeLists.txt
+        if ! grep -q "COMPONENT_WHOLE_ARCHIVE" "$MAIN_CMAKELISTS"; then
+          sed -i '1s/^/set(COMPONENT_WHOLE_ARCHIVE ON)\n/' "$MAIN_CMAKELISTS"
+          echo "✅ Patched main/CMakeLists.txt with COMPONENT_WHOLE_ARCHIVE=ON"
+        fi
+        cat "$MAIN_CMAKELISTS" | head -5
+        
         # Initialize git submodules manually (skip 'make submodules' which runs CMake)
         cd /tmp/micropython
         git submodule update --init lib/micropython-lib 2>&1 | tail -5
