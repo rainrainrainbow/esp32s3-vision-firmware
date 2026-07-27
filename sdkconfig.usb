@@ -1,4 +1,5 @@
-# USB configuration for ESP-Vision
+# USB configuration for ESP-Vision - DISABLED (use UART REPL instead)
 CONFIG_USB_CDC_BOOT_DEFAULT=n
 CONFIG_USB_CDC_ENABLED=n
 CONFIG_USB_OTG_SUPPORTED=n
+CONFIG_TINYUSB_ENABLED=n
