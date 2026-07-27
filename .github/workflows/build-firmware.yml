@@ -31,7 +31,7 @@ jobs:
           make BOARD=MY_ESP32S3_VISION -j$(nproc) 2>&1
       - name: Merge firmware
         shell: bash
-        run: source /opt/esp/idf/export.sh && cd /tmp/micropython/ports/esp32 && B=$(find build-MY_ESP32S3_VISION -name micropython.bin -type f 2>/dev/null | head -1) && if [ -z "$B" ]; then echo "not found"; find . -name '*.bin' -type f; exit 1; fi && D=$(dirname "$B") && mkdir -p $GITHUB_WORKSPACE/output && esptool.py --chip esp32s3 merge_bin --flash_mode dio --flash_size 16MB --flash_freq 80m -o $GITHUB_WORKSPACE/output/esp32s3_vision_firmware.bin 0x0 $D/bootloader/bootloader.bin 0x8000 $D/partition_table/partition-table.bin 0x20000 $D/micropython.bin
+        run: source /opt/esp/idf/export.sh && cd /tmp/micropython/ports/esp32 && B=$(find build-MY_ESP32S3_VISION -name micropython.bin -type f 2>/dev/null | head -1) && if [ -z "$B" ]; then echo "not found"; find . -name '*.bin' -type f; exit 1; fi && D=$(dirname "$B") && mkdir -p $GITHUB_WORKSPACE/output && esptool.py --chip esp32s3 merge_bin --flash_mode dio --flash_size 16MB --flash_freq 80m -o $GITHUB_WORKSPACE/output/esp32s3_vision_firmware.bin 0x0 $D/bootloader/bootloader.bin 0x8000 $D/partition_table/partition-table.bin 0xf000 $D/ota_data_initial.bin 0x20000 $D/micropython.bin
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
