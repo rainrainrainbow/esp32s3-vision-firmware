@@ -9,137 +9,68 @@ jobs:
   build:
     runs-on: ubuntu-latest
     container: espressif/idf:release-v5.5
-    
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Clone MicroPython + ESP-Vision modules
-      shell: bash
-      run: |
-        source /opt/esp/idf/export.sh
-        
-        # Clone MicroPython v1.28.0
-        cd /tmp
-        git clone --depth 1 --branch v1.28.0 https://github.com/micropython/micropython.git
-        cd micropython
-        git submodule update --init lib/berkeley-db-1.xx
-        
-        # Clone ESP-Vision modules needed
-        cd /tmp
-        git clone --depth 1 --branch master https://github.com/espressif/esp-vision.git
-        
-        echo "=== Cloned successfully ==="
-
-    - name: Setup board configuration
-      shell: bash
-      run: |
-        # Copy our board to MicroPython's boards directory
-        MP_BOARDS=/tmp/micropython/ports/esp32/boards
-        MY_BOARD=$MP_BOARDS/MY_ESP32S3_VISION
-        
-        mkdir -p $MY_BOARD
-        
-        # Copy board config files
-        cp $GITHUB_WORKSPACE/boards/MY_ESP32S3_VISION/port/mpconfigboard.h $MY_BOARD/
-        cp $GITHUB_WORKSPACE/boards/MY_ESP32S3_VISION/port/mpconfigboard.cmake $MY_BOARD/
-        cp $GITHUB_WORKSPACE/boards/MY_ESP32S3_VISION/port/partitions.csv $MY_BOARD/
-        cp $GITHUB_WORKSPACE/boards/MY_ESP32S3_VISION/port/sdkconfig.board $MY_BOARD/
-        cp $GITHUB_WORKSPACE/boards/MY_ESP32S3_VISION/boardconfig.h $MY_BOARD/
-        cp $GITHUB_WORKSPACE/boards/MY_ESP32S3_VISION/manifest.py $MY_BOARD/
-        
-        # Copy ESP-Vision camera driver
-        mkdir -p /tmp/micropython/ports/esp32/modules
-        cp /tmp/esp-vision/modules/py_helper.c /tmp/micropython/ports/esp32/
-        cp /tmp/esp-vision/modules/py_helper.h /tmp/micropython/ports/esp32/
-        cp /tmp/esp-vision/modules/py_sensor.c /tmp/micropython/ports/esp32/
-        cp /tmp/esp-vision/modules/py_image.c /tmp/micropython/ports/esp32/
-        cp /tmp/esp-vision/modules/py_image.h /tmp/micropython/ports/esp32/
-        cp /tmp/esp-vision/modules/py_display.c /tmp/micropython/ports/esp32/
-        cp /tmp/esp-vision/modules/py_assert.h /tmp/micropython/ports/esp32/
-        cp /tmp/esp-vision/modules/qstrdefs_esp_vision.h /tmp/micropython/ports/esp32/
-        
-        echo "=== Board files copied ==="
-        ls -la $MY_BOARD/
-
-    - name: Build mpy-cross
-      shell: bash
-      run: |
-        source /opt/esp/idf/export.sh
-        cd /tmp/micropython/mpy-cross
-        make -j$(nproc)
-        echo "mpy-cross built successfully"
-
-    - name: Build firmware
-      shell: bash
-      run: |
-        source /opt/esp/idf/export.sh
-        cd /tmp/micropython/ports/esp32
-        
-        # Copy sdkconfig.usb to MicroPython's boards directory (needed for CMake)
-        cp $GITHUB_WORKSPACE/sdkconfig.usb /tmp/micropython/ports/esp32/boards/sdkconfig.usb 2>/dev/null || true
-        
-        # 🔧 PATCH: Fix TinyUSB linker circular dependency
-        # tinyusb references tud_descriptor_*_cb from main component
-        # Force whole-archive on main to ensure all symbols visible to linker
-        MAIN_CMAKELISTS=/tmp/micropython/ports/esp32/main/CMakeLists.txt
-        if ! grep -q "COMPONENT_WHOLE_ARCHIVE" "$MAIN_CMAKELISTS"; then
-          sed -i '1s/^/set(COMPONENT_WHOLE_ARCHIVE ON)\n/' "$MAIN_CMAKELISTS"
-          echo "✅ Patched main/CMakeLists.txt with COMPONENT_WHOLE_ARCHIVE=ON"
-        fi
-        cat "$MAIN_CMAKELISTS" | head -5
-        
-        # Initialize git submodules manually (skip 'make submodules' which runs CMake)
-        cd /tmp/micropython
-        git submodule update --init lib/micropython-lib 2>&1 | tail -5
-        
-        # Build with our board - show full output
-        cd /tmp/micropython/ports/esp32
-        make BOARD=MY_ESP32S3_VISION -j$(nproc) 2>&1
-        echo "Build RC: ${PIPESTATUS[0]}"
-
-    - name: Find and merge firmware
-      shell: bash
-      run: |
-        source /opt/esp/idf/export.sh
-        cd /tmp/micropython/ports/esp32
-        
-        echo "=== Looking for build artifacts ==="
-        find build-MY_ESP32S3_VISION -name "*.bin" -type f 2>/dev/null | head -20
-        
-        # Check which build directory exists
-        BUILD_DIR=$(find /tmp/micropython/ports/esp32 -maxdepth 2 -name "micropython.bin" -type f 2>/dev/null | head -1)
-        if [ -z "$BUILD_DIR" ]; then
-          BUILD_DIR=$(find /tmp/micropython -name "micropython.bin" -type f 2>/dev/null | head -1)
-        fi
-        
-        if [ -z "$BUILD_DIR" ]; then
-          echo "❌ micropython.bin not found"
-          find /tmp/micropython/ports/esp32 -type f 2>/dev/null | head -50
-          exit 1
-        fi
-        
-        BUILD_DIR=$(dirname "$BUILD_DIR")
-        echo "Build directory: $BUILD_DIR"
-        ls -la "$BUILD_DIR/"
-        
-        # Merge firmware
-        mkdir -p $GITHUB_WORKSPACE/output
-        esptool.py --chip esp32s3 merge_bin \
-          --flash_mode dio --flash_size 16MB --flash_freq 80m \
-          -o $GITHUB_WORKSPACE/output/esp32s3_vision_firmware.bin \
-          0x0 "$BUILD_DIR/bootloader/bootloader.bin" \
-          0x8000 "$BUILD_DIR/partition_table/partition-table.bin" \
-          0x20000 "$BUILD_DIR/micropython.bin"
-        
-        ls -lh $GITHUB_WORKSPACE/output/esp32s3_vision_firmware.bin
-        echo "FIRMWARE_READY=true" >> $GITHUB_ENV
-
-    - name: Upload firmware artifact
-      if: env.FIRMWARE_READY == 'true'
-      uses: actions/upload-artifact@v4
-      with:
-        name: esp32s3-vision-firmware
-        path: output/esp32s3_vision_firmware.bin
-        retention-days: 30
-        if-no-files-found: error
+      - uses: actions/checkout@v4
+      - name: Clone
+        shell: bash
+        run: |
+          source /opt/esp/idf/export.sh
+          cd /tmp
+          git clone --depth 1 --branch v1.28.0 https://github.com/micropython/micropython.git
+          cd micropython && git submodule update --init lib/berkeley-db-1.xx
+          cd /tmp
+          git clone --depth 1 --branch master https://github.com/espressif/esp-vision.git
+      - name: Setup board
+        shell: bash
+        run: |
+          MP_BOARDS=/tmp/micropython/ports/esp32/boards
+          MY_BOARD=$MP_BOARDS/MY_ESP32S3_VISION
+          mkdir -p $MY_BOARD
+          cp $GITHUB_WORKSPACE/boards/MY_ESP32S3_VISION/port/* $MY_BOARD/
+          cp $GITHUB_WORKSPACE/boards/MY_ESP32S3_VISION/boardconfig.h $MY_BOARD/
+          cp $GITHUB_WORKSPACE/boards/MY_ESP32S3_VISION/manifest.py $MY_BOARD/
+          mkdir -p /tmp/micropython/ports/esp32/modules
+          cp /tmp/esp-vision/modules/py_*.c /tmp/esp-vision/modules/py_*.h /tmp/esp-vision/modules/qstrdefs_esp_vision.h /tmp/esp-vision/modules/py_assert.h /tmp/micropython/ports/esp32/
+      - name: Build mpy-cross
+        shell: bash
+        run: |
+          source /opt/esp/idf/export.sh
+          cd /tmp/micropython/mpy-cross && make -j$(nproc)
+      - name: Build firmware
+        shell: bash
+        run: |
+          source /opt/esp/idf/export.sh
+          cd /tmp/micropython/ports/esp32
+          cp $GITHUB_WORKSPACE/sdkconfig.usb boards/sdkconfig.usb 2>/dev/null || true
+          python3 -c "
+import sys
+f = 'main/CMakeLists.txt'
+with open(f, 'a') as fh:
+    fh.write('''
+idf_component_get_property(main_lib main COMPONENT_LIB)
+target_link_libraries(\${main_lib} PUBLIC \"-Wl,--undefined=tud_descriptor_configuration_cb\")
+target_link_libraries(\${main_lib} PUBLIC \"-Wl,--undefined=tud_descriptor_device_cb\")
+target_link_libraries(\${main_lib} PUBLIC \"-Wl,--undefined=tud_descriptor_string_cb\")
+''')
+print('Patched', f)
+"
+          cd /tmp/micropython && git submodule update --init lib/micropython-lib 2>&1 | tail -5
+          cd /tmp/micropython/ports/esp32 && make BOARD=MY_ESP32S3_VISION -j$(nproc) 2>&1
+      - name: Merge firmware
+        shell: bash
+        run: |
+          source /opt/esp/idf/export.sh
+          cd /tmp/micropython/ports/esp32
+          B=$(find build-MY_ESP32S3_VISION -name micropython.bin -type f 2>/dev/null | head -1)
+          [ -n "$B" ] || { echo "not found"; find . -name '*.bin' -type f; exit 1; }
+          D=$(dirname "$B")
+          mkdir -p $GITHUB_WORKSPACE/output
+          esptool.py --chip esp32s3 merge_bin --flash_mode dio --flash_size 16MB --flash_freq 80m -o $GITHUB_WORKSPACE/output/esp32s3_vision_firmware.bin 0x0 $D/bootloader/bootloader.bin 0x8000 $D/partition_table/partition-table.bin 0x20000 $D/micropython.bin
+          echo "FIRMWARE_READY=1" >> $GITHUB_ENV
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32s3-vision-firmware
+          path: output/esp32s3_vision_firmware.bin
+          retention-days: 30
+          if-no-files-found: warn
