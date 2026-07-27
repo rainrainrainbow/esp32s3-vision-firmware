@@ -83,12 +83,11 @@ jobs:
         echo "=== Files in build boards dir ==="
         find "$BUILD_BOARDS_DIR" -name "sdkconfig*" -type f 2>/dev/null
         
-        # Now build using idf.py directly (not make, which would re-run prepare-micropython)
+        # Now build using the ESP-Vision Makefile but skip the prepare step
+        # by directly calling idf.py in the prepared build directory
         echo "=== Building firmware with idf.py ==="
         cd /tmp/esp-vision/build/micropython/idf5.5/micropython/ports/esp32
-        echo "Current directory: $(pwd)"
-        echo "Contents: $(ls -la)"
-        idf.py -DBOARD=MY_ESP32S3_VISION build -j$(nproc)
+        idf.py -DBOARD=MY_ESP32S3_VISION build
         echo "Firmware build completed"
 
     - name: Merge firmware binaries
