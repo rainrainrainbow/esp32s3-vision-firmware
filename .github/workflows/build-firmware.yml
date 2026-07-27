@@ -83,9 +83,9 @@ jobs:
         cd /tmp/micropython
         git submodule update --init lib/micropython-lib 2>&1 | tail -5
         
-        # Build with our board
+        # Build with our board - show full output
         cd /tmp/micropython/ports/esp32
-        make BOARD=MY_ESP32S3_VISION -j$(nproc) 2>&1 | tail -80
+        make BOARD=MY_ESP32S3_VISION -j$(nproc) 2>&1
         echo "Build RC: ${PIPESTATUS[0]}"
 
     - name: Find and merge firmware

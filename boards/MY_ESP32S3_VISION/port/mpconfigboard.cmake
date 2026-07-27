@@ -5,7 +5,7 @@ set(SDKCONFIG_DEFAULTS
     boards/sdkconfig.usb
     boards/sdkconfig.240mhz
     boards/sdkconfig.spiram_sx
-    boards/MY_ESP32S3_VISION/port/sdkconfig.board
+    boards/MY_ESP32S3_VISION/sdkconfig.board
 )
 
 set(MICROPY_PY_BTREE OFF)
