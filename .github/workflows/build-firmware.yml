@@ -76,6 +76,9 @@ jobs:
         source /opt/esp/idf/export.sh
         cd /tmp/micropython/ports/esp32
         
+        # Initialize submodules
+        make BOARD=MY_ESP32S3_VISION submodules 2>&1 | tail -20
+        
         # Build with our board
         make BOARD=MY_ESP32S3_VISION -j$(nproc) 2>&1 | tail -80
         echo "Build RC: ${PIPESTATUS[0]}"
