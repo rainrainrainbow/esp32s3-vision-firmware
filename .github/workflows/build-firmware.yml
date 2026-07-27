@@ -17,7 +17,18 @@ jobs:
         run: source /opt/esp/idf/export.sh && cd /tmp/micropython/mpy-cross && make -j$(nproc)
       - name: Build firmware
         shell: bash
-        run: source /opt/esp/idf/export.sh && cd /tmp/micropython/ports/esp32 && cp $GITHUB_WORKSPACE/sdkconfig.usb boards/sdkconfig.usb 2>/dev/null && sed -i '/^include.*esp32_common.cmake$/i set(COMPONENT_ADD_LDFLAGS "-Wl,--undefined=tud_descriptor_configuration_cb -Wl,--undefined=tud_descriptor_device_cb -Wl,--undefined=tud_descriptor_string_cb")' main/CMakeLists.txt && cd /tmp/micropython && git submodule update --init lib/micropython-lib 2>&1 | tail -5 && cd /tmp/micropython/ports/esp32 && make BOARD=MY_ESP32S3_VISION -j$(nproc) 2>&1
+        run: |
+          source /opt/esp/idf/export.sh
+          cd /tmp/micropython/ports/esp32
+          # Copy sdkconfig
+          cp $GITHUB_WORKSPACE/sdkconfig.usb boards/sdkconfig.usb 2>/dev/null
+          # Patch esp32_common.cmake to add --undefined for TinyUSB descriptor callbacks
+          # These callbacks are in main component but called by tinyusb library which is linked before main
+          sed -i '/-Wl,--wrap=esp_panic_handler/a\ \n  # Force TinyUSB descriptor callback symbols (needed when tinyusb is linked before main)\n  -Wl,--undefined=tud_descriptor_configuration_cb\n  -Wl,--undefined=tud_descriptor_device_cb\n  -Wl,--undefined=tud_descriptor_string_cb' esp32_common.cmake
+          cd /tmp/micropython
+          git submodule update --init lib/micropython-lib 2>&1 | tail -5
+          cd /tmp/micropython/ports/esp32
+          make BOARD=MY_ESP32S3_VISION -j$(nproc) 2>&1
       - name: Merge firmware
         shell: bash
         run: source /opt/esp/idf/export.sh && cd /tmp/micropython/ports/esp32 && B=$(find build-MY_ESP32S3_VISION -name micropython.bin -type f 2>/dev/null | head -1) && if [ -z "$B" ]; then echo "not found"; find . -name '*.bin' -type f; exit 1; fi && D=$(dirname "$B") && mkdir -p $GITHUB_WORKSPACE/output && esptool.py --chip esp32s3 merge_bin --flash_mode dio --flash_size 16MB --flash_freq 80m -o $GITHUB_WORKSPACE/output/esp32s3_vision_firmware.bin 0x0 $D/bootloader/bootloader.bin 0x8000 $D/partition_table/partition-table.bin 0x20000 $D/micropython.bin
