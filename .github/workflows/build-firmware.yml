@@ -76,10 +76,15 @@ jobs:
         source /opt/esp/idf/export.sh
         cd /tmp/micropython/ports/esp32
         
-        # Initialize submodules
-        make BOARD=MY_ESP32S3_VISION submodules 2>&1 | tail -20
+        # Copy sdkconfig.usb to MicroPython's boards directory (needed for CMake)
+        cp $GITHUB_WORKSPACE/sdkconfig.usb /tmp/micropython/ports/esp32/boards/sdkconfig.usb 2>/dev/null || true
+        
+        # Initialize git submodules manually (skip 'make submodules' which runs CMake)
+        cd /tmp/micropython
+        git submodule update --init lib/micropython-lib 2>&1 | tail -5
         
         # Build with our board
+        cd /tmp/micropython/ports/esp32
         make BOARD=MY_ESP32S3_VISION -j$(nproc) 2>&1 | tail -80
         echo "Build RC: ${PIPESTATUS[0]}"
 
